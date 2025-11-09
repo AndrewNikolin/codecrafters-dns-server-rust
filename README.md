@@ -35,3 +35,17 @@ Note: This section is for stages 2 and beyond.
    the first time you run it. Subsequent runs will be fast.
 1. Commit your changes and run `git push origin master` to submit your solution
    to CodeCrafters. Test output will be streamed to your terminal.
+
+## Codecrafters grader command sequence
+
+When you're ready for automated verification, use the Codecrafters CLI:
+
+```bash
+codecrafters test --stage 1
+```
+
+This command builds the project, launches the UDP server on `127.0.0.1:2053`,
+and sends probe packets that expect the 12-byte DNS header response. Keep the
+process running until the grader finishes streaming results; you'll see log
+lines from `src/main.rs` for each inbound probe along with confirmation that
+the fixed header was sent.

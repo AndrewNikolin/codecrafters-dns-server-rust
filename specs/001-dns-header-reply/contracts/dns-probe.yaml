@@ -1,0 +1,104 @@
+openapi: 3.0.3
+info:
+  title: Lesson 1 DNS Header Contract
+  version: 1.0.0
+  description: |
+    Conceptual REST contract mirroring the Codecrafters grader interaction. A client submits
+    arbitrary UDP payload bytes and expects back the fixed 12-byte DNS header required for
+    Lesson 1. This document captures the observable behavior so tests can be derived.
+servers:
+  - url: udp://127.0.0.1:2053
+    description: Logical representation of the UDP listener.
+paths:
+  /udp-probes:
+    post:
+      summary: Send a DNS probe and receive the canonical header response
+      description: >
+        Represents a single UDP datagram exchange. The server must reply within 200 ms with
+        the header whose fields match the lesson specification regardless of payload contents.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProbeRequest'
+      responses:
+        '200':
+          description: The canonical DNS header bytes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DnsHeaderResponse'
+components:
+  schemas:
+    ProbeRequest:
+      type: object
+      properties:
+        payload:
+          type: string
+          format: byte
+          description: Raw packet contents; empty string allowed and packets may exceed 512 bytes.
+      required:
+        - payload
+    DnsHeaderResponse:
+      type: object
+      properties:
+        packetId:
+          type: integer
+          format: int32
+          example: 1234
+        qr:
+          type: integer
+          enum: [1]
+        opcode:
+          type: integer
+          enum: [0]
+        aa:
+          type: integer
+          enum: [0]
+        tc:
+          type: integer
+          enum: [0]
+        rd:
+          type: integer
+          enum: [0]
+        ra:
+          type: integer
+          enum: [0]
+        z:
+          type: integer
+          enum: [0]
+        rcode:
+          type: integer
+          enum: [0]
+        qdcount:
+          type: integer
+          enum: [0]
+        ancount:
+          type: integer
+          enum: [0]
+        nscount:
+          type: integer
+          enum: [0]
+        arcount:
+          type: integer
+          enum: [0]
+        bytes:
+          type: string
+          format: byte
+          description: Serialized header in network byte order (always 12 bytes, base64 encoded).
+      required:
+        - packetId
+        - qr
+        - opcode
+        - aa
+        - tc
+        - rd
+        - ra
+        - z
+        - rcode
+        - qdcount
+        - ancount
+        - nscount
+        - arcount
+        - bytes

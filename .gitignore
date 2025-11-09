@@ -8,16 +8,18 @@ target/
 
 # MSVC Windows builds of rustc generate these, which store debugging information
 *.pdb
-/.codex/log/codex-tui.log
-/.codex/prompts/speckit.analyze.md
-/.codex/prompts/speckit.checklist.md
-/.codex/prompts/speckit.clarify.md
-/.codex/prompts/speckit.constitution.md
-/.codex/prompts/speckit.implement.md
-/.codex/prompts/speckit.plan.md
-/.codex/prompts/speckit.specify.md
-/.codex/prompts/speckit.tasks.md
-/.codex/sessions/2025/11/08/rollout-2025-11-08T22-30-35-019a66aa-68b5-7083-963d-099cc7cb4ef6.jsonl
-/.codex/auth.json
-/.codex/config.toml
-/.codex/version.json
+/.codex
+
+# IDE and tooling artifacts
+.idea/
+.vscode/
+
+# Environment and log files
+.env
+.env.*
+*.log
+
+# Additional Rust build artifacts
+*.rlib
+*.prof*
+*.dSYM
