@@ -49,3 +49,14 @@ and sends probe packets that expect the 12-byte DNS header response. Keep the
 process running until the grader finishes streaming results; you'll see log
 lines from `src/main.rs` for each inbound probe along with confirmation that
 the fixed header was sent.
+
+## Lesson 2: Question section expectations
+
+- Every reply now includes a single question for `codecrafters.io`, so `QDCOUNT`
+  in the header is set to `0x0001`.
+- The encoded labels appear immediately after the 12-byte header and should
+  read `0c 63 6f 64 65 63 72 61 66 74 65 72 73 02 69 6f 00` followed by
+  `00 01 00 01` for Type and Class.
+- If your local probes or grader output show fewer bytes, double-check that
+  `build_response_packet()` (see `src/dns.rs`) is used everywhere the server
+  responds.

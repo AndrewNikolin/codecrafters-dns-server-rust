@@ -1,6 +1,6 @@
 mod dns;
 
-use crate::dns::STANDARD_DNS_HEADER;
+use crate::dns::build_response_packet;
 use std::net::UdpSocket;
 
 fn main() {
@@ -24,12 +24,13 @@ fn run() -> std::io::Result<()> {
                     size,
                     hex_preview(&buf[..size])
                 );
-                if let Err(err) = socket.send_to(STANDARD_DNS_HEADER.bytes(), source) {
-                    eprintln!("Failed to send DNS header to {source}: {err}");
+                let response = build_response_packet();
+                if let Err(err) = socket.send_to(&response, source) {
+                    eprintln!("Failed to send DNS packet to {source}: {err}");
                 } else {
                     println!(
-                        "Sent {}-byte standard DNS header to {}",
-                        STANDARD_DNS_HEADER.bytes().len(),
+                        "Sent DNS response (header=12 bytes, question={} bytes) to {}",
+                        response.len().saturating_sub(12),
                         source
                     );
                 }

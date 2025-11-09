@@ -65,12 +65,35 @@ fn test_mutex() -> &'static Mutex<()> {
     TEST_MUTEX.get_or_init(|| Mutex::new(()))
 }
 
-const EXPECTED_HEADER: [u8; 12] = [
-    0x04, 0xD2, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+const HEADER_LEN: usize = 12;
+const EXPECTED_HEADER: [u8; HEADER_LEN] = [
+    0x04, 0xD2, 0x80, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+];
+const EXPECTED_QUESTION: [u8; 21] = [
+    0x0c, b'c', b'o', b'd', b'e', b'c', b'r', b'a', b'f', b't', b'e', b'r', b's', 0x02, b'i', b'o',
+    0x00, 0x00, 0x01, 0x00, 0x01,
 ];
 
+fn assert_canonical_response(response: &[u8]) {
+    assert!(
+        response.len() >= HEADER_LEN,
+        "response too short: expected at least {} bytes, got {}",
+        HEADER_LEN,
+        response.len()
+    );
+    let (header, rest) = response.split_at(HEADER_LEN);
+    assert_eq!(
+        header, EXPECTED_HEADER,
+        "header bytes differed from expected canonical header"
+    );
+    assert_eq!(
+        rest, EXPECTED_QUESTION,
+        "question bytes differed from canonical codecrafters.io question"
+    );
+}
+
 #[test]
-fn responds_with_fixed_header() {
+fn responds_with_question_section() {
     if skip_if_udp_forbidden() {
         eprintln!("Skipping UDP integration test: binding is not permitted in this environment");
         return;
@@ -80,8 +103,8 @@ fn responds_with_fixed_header() {
     let harness = TestHarness::spawn().expect("server failed to start");
     let response = harness
         .send_probe(&[0xAA, 0xBB, 0xCC])
-        .expect("failed to receive DNS header bytes");
-    assert_eq!(response, EXPECTED_HEADER);
+        .expect("failed to receive DNS response bytes");
+    assert_canonical_response(&response);
 }
 
 #[test]
@@ -95,8 +118,8 @@ fn responds_to_empty_payload() {
     let harness = TestHarness::spawn().expect("server failed to start");
     let response = harness
         .send_probe(&[])
-        .expect("failed to receive DNS header bytes");
-    assert_eq!(response, EXPECTED_HEADER);
+        .expect("failed to receive DNS response bytes");
+    assert_canonical_response(&response);
 }
 
 #[test]
@@ -111,6 +134,26 @@ fn responds_to_large_payload() {
     let harness = TestHarness::spawn().expect("server failed to start");
     let response = harness
         .send_probe(&payload)
-        .expect("failed to receive DNS header bytes");
-    assert_eq!(response, EXPECTED_HEADER);
+        .expect("failed to receive DNS response bytes");
+    assert_canonical_response(&response);
+}
+
+#[test]
+fn responds_with_canonical_question_for_alternate_domain() {
+    if skip_if_udp_forbidden() {
+        eprintln!("Skipping UDP integration test: binding is not permitted in this environment");
+        return;
+    }
+
+    let _guard = test_mutex().lock().expect("failed to acquire test mutex");
+    // Fake payload that resembles a different domain question (e.g., example.com)
+    let payload = [
+        0x07, b'e', b'x', b'a', b'm', b'p', b'l', b'e', 0x03, b'c', b'o', b'm', 0x00, 0x00, 0x01,
+        0x00, 0x01,
+    ];
+    let harness = TestHarness::spawn().expect("server failed to start");
+    let response = harness
+        .send_probe(&payload)
+        .expect("failed to receive DNS response bytes");
+    assert_canonical_response(&response);
 }

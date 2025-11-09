@@ -1,0 +1,126 @@
+openapi: 3.0.3
+info:
+  title: Lesson 2 DNS Question Contract
+  version: 1.0.0
+  description: |
+    Conceptual contract describing the observable UDP exchange required by Lesson 2.
+    Clients send any UDP probe to port 2053 and must receive a reply whose question
+    section encodes `codecrafters.io` with Type=1 and Class=1.
+servers:
+  - url: udp://127.0.0.1:2053
+paths:
+  /udp-probes:
+    post:
+      summary: Send UDP probe and receive canonical header+question response
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProbeRequest'
+      responses:
+        '200':
+          description: DNS header plus canonical question section
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DnsReply'
+components:
+  schemas:
+    ProbeRequest:
+      type: object
+      properties:
+        payload:
+          type: string
+          format: byte
+          description: Raw bytes sent to the UDP socket (can be empty or arbitrary).
+      required:
+        - payload
+    DnsReply:
+      type: object
+      properties:
+        header:
+          $ref: '#/components/schemas/DnsHeader'
+        question:
+          $ref: '#/components/schemas/DnsQuestion'
+      required:
+        - header
+        - question
+    DnsHeader:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1234
+        qr:
+          type: integer
+          enum: [1]
+        opcode:
+          type: integer
+          enum: [0]
+        aa:
+          type: integer
+          enum: [0]
+        tc:
+          type: integer
+          enum: [0]
+        rd:
+          type: integer
+          enum: [0]
+        ra:
+          type: integer
+          enum: [0]
+        z:
+          type: integer
+          enum: [0]
+        rcode:
+          type: integer
+          enum: [0]
+        qdcount:
+          type: integer
+          enum: [1]
+        ancount:
+          type: integer
+          enum: [0]
+        nscount:
+          type: integer
+          enum: [0]
+        arcount:
+          type: integer
+          enum: [0]
+      required:
+        - id
+        - qr
+        - opcode
+        - aa
+        - tc
+        - rd
+        - ra
+        - z
+        - rcode
+        - qdcount
+        - ancount
+        - nscount
+        - arcount
+    DnsQuestion:
+      type: object
+      properties:
+        nameLabels:
+          type: array
+          items:
+            type: string
+          example: ["codecrafters", "io"]
+        encodedNameHex:
+          type: string
+          example: "0c 63 6f 64 65 63 72 61 66 74 65 72 73 02 69 6f 00"
+        typeCode:
+          type: integer
+          enum: [1]
+        classCode:
+          type: integer
+          enum: [1]
+      required:
+        - nameLabels
+        - encodedNameHex
+        - typeCode
+        - classCode
