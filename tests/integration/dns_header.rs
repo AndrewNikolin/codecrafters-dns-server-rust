@@ -1,74 +1,7 @@
+use super::support::{ResolverBehavior, ServerHarness, HEADER_LEN};
 use std::convert::TryInto;
-use std::io;
 use std::net::UdpSocket;
-use std::process::{Child, Command, Stdio};
 use std::sync::{Mutex, OnceLock};
-use std::thread;
-use std::time::Duration;
-
-const SERVER_ADDR: &str = "127.0.0.1:2053";
-const STARTUP_DELAY: Duration = Duration::from_millis(50);
-const RESPONSE_TIMEOUT: Duration = Duration::from_millis(400);
-const HEADER_LEN: usize = 12;
-
-pub struct TestHarness {
-    child: Child,
-}
-
-impl TestHarness {
-    pub fn spawn() -> io::Result<Self> {
-        let child = Command::new(env!("CARGO_BIN_EXE_codecrafters-dns-server"))
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()?;
-
-        wait_for_port()?;
-        Ok(Self { child })
-    }
-
-    pub fn send_probe(&self, payload: &[u8]) -> io::Result<Vec<u8>> {
-        let socket = bind_client_socket()?;
-        socket.send_to(payload, SERVER_ADDR)?;
-
-        let mut buf = [0u8; 512];
-        let (len, _) = socket.recv_from(&mut buf)?;
-        Ok(buf[..len].to_vec())
-    }
-
-    pub fn send_probe_expect_timeout(&self, payload: &[u8]) -> io::Result<()> {
-        let socket = bind_client_socket()?;
-        socket.send_to(payload, SERVER_ADDR)?;
-
-        let mut buf = [0u8; 512];
-        match socket.recv_from(&mut buf) {
-            Ok((len, _)) => Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("expected timeout but received {} bytes", len),
-            )),
-            Err(err) if err.kind() == io::ErrorKind::WouldBlock => Ok(()),
-            Err(err) => Err(err),
-        }
-    }
-}
-
-impl Drop for TestHarness {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-fn bind_client_socket() -> io::Result<UdpSocket> {
-    let socket = UdpSocket::bind("127.0.0.1:0")?;
-    socket.set_read_timeout(Some(RESPONSE_TIMEOUT))?;
-    Ok(socket)
-}
-
-fn wait_for_port() -> io::Result<()> {
-    thread::sleep(STARTUP_DELAY);
-    Ok(())
-}
 
 pub fn skip_if_udp_forbidden() -> bool {
     UdpSocket::bind("127.0.0.1:0").is_err()
@@ -87,7 +20,8 @@ fn echoes_transaction_id_and_counts() {
     }
 
     let _guard = test_mutex().lock().expect("failed to acquire test mutex");
-    let harness = TestHarness::spawn().expect("server failed to start");
+    let harness =
+        ServerHarness::spawn(ResolverBehavior::Answering).expect("server failed to start");
     let packet = build_query_with_counts(0xBEEF, 0x0100, 2, 3, 4, 5, "codecrafters.io");
     let response = harness
         .send_probe(&packet)
@@ -113,7 +47,8 @@ fn mirrors_opcode_and_rd_flags() {
     }
 
     let _guard = test_mutex().lock().expect("failed to acquire test mutex");
-    let harness = TestHarness::spawn().expect("server failed to start");
+    let harness =
+        ServerHarness::spawn(ResolverBehavior::Answering).expect("server failed to start");
     let opcode: u8 = 0b0011;
     let flags = ((opcode as u16) << 11) | 0x0100; // OPCODE=3, RD=1
     let packet = build_query_with_counts(0x4444, flags, 1, 0, 0, 0, "codecrafters.io");
@@ -138,7 +73,8 @@ fn sets_rcode_based_on_opcode() {
     }
 
     let _guard = test_mutex().lock().expect("failed to acquire test mutex");
-    let harness = TestHarness::spawn().expect("server failed to start");
+    let harness =
+        ServerHarness::spawn(ResolverBehavior::Answering).expect("server failed to start");
 
     // Standard query (OPCODE 0) should yield RCODE 0.
     let standard_packet = build_query_with_counts(0x2222, 0x0100, 1, 0, 0, 0, "codecrafters.io");
@@ -175,10 +111,11 @@ fn drops_packets_shorter_than_header() {
         return;
     }
     let _guard = test_mutex().lock().expect("failed to acquire test mutex");
-    let harness = TestHarness::spawn().expect("server failed to start");
+    let harness =
+        ServerHarness::spawn(ResolverBehavior::Answering).expect("server failed to start");
     let truncated = vec![0x01, 0x02, 0x03];
     harness
-        .send_probe_expect_timeout(&truncated)
+        .expect_no_response(&truncated)
         .expect("server should drop malformed packets without responding");
 }
 
@@ -190,7 +127,8 @@ fn still_returns_answer_section_for_codecrafters() {
     }
 
     let _guard = test_mutex().lock().expect("failed to acquire test mutex");
-    let harness = TestHarness::spawn().expect("server failed to start");
+    let harness =
+        ServerHarness::spawn(ResolverBehavior::Answering).expect("server failed to start");
     let query = build_query_with_counts(0x7777, 0x0100, 1, 0, 0, 0, "codecrafters.io");
     let response = harness
         .send_probe(&query)

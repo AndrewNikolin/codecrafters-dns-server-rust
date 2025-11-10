@@ -1,74 +1,7 @@
+use super::support::{ResolverBehavior, ServerHarness, HEADER_LEN};
 use std::convert::TryInto;
-use std::io;
 use std::net::UdpSocket;
-use std::process::{Child, Command, Stdio};
 use std::sync::{Mutex, OnceLock};
-use std::thread;
-use std::time::Duration;
-
-const SERVER_ADDR: &str = "127.0.0.1:2053";
-const STARTUP_DELAY: Duration = Duration::from_millis(50);
-const RESPONSE_TIMEOUT: Duration = Duration::from_millis(400);
-const HEADER_LEN: usize = 12;
-
-pub struct TestHarness {
-    child: Child,
-}
-
-impl TestHarness {
-    pub fn spawn() -> io::Result<Self> {
-        let child = Command::new(env!("CARGO_BIN_EXE_codecrafters-dns-server"))
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()?;
-
-        wait_for_port()?;
-        Ok(Self { child })
-    }
-
-    pub fn send_probe(&self, payload: &[u8]) -> io::Result<Vec<u8>> {
-        let socket = bind_client_socket()?;
-        socket.send_to(payload, SERVER_ADDR)?;
-
-        let mut buf = [0u8; 512];
-        let (len, _) = socket.recv_from(&mut buf)?;
-        Ok(buf[..len].to_vec())
-    }
-
-    pub fn expect_no_response(&self, payload: &[u8]) -> io::Result<()> {
-        let socket = bind_client_socket()?;
-        socket.send_to(payload, SERVER_ADDR)?;
-
-        let mut buf = [0u8; 512];
-        match socket.recv_from(&mut buf) {
-            Ok((len, _)) => Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("expected drop but received {} bytes", len),
-            )),
-            Err(err) if err.kind() == io::ErrorKind::WouldBlock => Ok(()),
-            Err(err) => Err(err),
-        }
-    }
-}
-
-impl Drop for TestHarness {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-fn bind_client_socket() -> io::Result<UdpSocket> {
-    let socket = UdpSocket::bind("127.0.0.1:0")?;
-    socket.set_read_timeout(Some(RESPONSE_TIMEOUT))?;
-    Ok(socket)
-}
-
-fn wait_for_port() -> io::Result<()> {
-    thread::sleep(STARTUP_DELAY);
-    Ok(())
-}
 
 fn skip_if_udp_forbidden() -> bool {
     UdpSocket::bind("127.0.0.1:0").is_err()
@@ -87,7 +20,8 @@ fn parses_compressed_questions() {
     }
 
     let _guard = test_mutex().lock().unwrap();
-    let harness = TestHarness::spawn().expect("server failed to start");
+    let harness =
+        ServerHarness::spawn(ResolverBehavior::Answering).expect("server failed to start");
 
     let packet =
         build_packet_with_specs(&[("codecrafters.io", None), ("codecrafters.io", Some(0))]);
@@ -109,7 +43,8 @@ fn mirrors_questions_uncompressed() {
     }
 
     let _guard = test_mutex().lock().unwrap();
-    let harness = TestHarness::spawn().expect("server failed to start");
+    let harness =
+        ServerHarness::spawn(ResolverBehavior::Answering).expect("server failed to start");
 
     let packet = build_packet_with_specs(&[
         ("alpha.codecrafters.io", None),
@@ -134,7 +69,8 @@ fn answers_each_question() {
     }
 
     let _guard = test_mutex().lock().unwrap();
-    let harness = TestHarness::spawn().expect("server failed to start");
+    let harness =
+        ServerHarness::spawn(ResolverBehavior::Answering).expect("server failed to start");
 
     let packet = build_packet_with_specs(&[
         ("one.codecrafters.io", None),
@@ -170,7 +106,8 @@ fn drops_invalid_pointers() {
     }
 
     let _guard = test_mutex().lock().unwrap();
-    let harness = TestHarness::spawn().expect("server failed to start");
+    let harness =
+        ServerHarness::spawn(ResolverBehavior::Answering).expect("server failed to start");
 
     let out_of_range = build_invalid_pointer_packet(0x3FF0);
     harness

@@ -1,0 +1,120 @@
+openapi: 3.1.0
+info:
+  title: Forwarding DNS Server Contract
+  version: "0.1.0"
+  description: |
+    Describes the externally visible behaviors for the Codecrafters forwarding DNS server.
+    Although the runtime protocol is UDP DNS, this document models interactions as a REST-style
+    contract to capture expectations for tooling and automated tests.
+  x-cli:
+    command: "./your_server --resolver <ip:port>"
+    flags:
+      resolver:
+        required: true
+        description: IPv4/IPv6 socket address for the upstream resolver (e.g., 1.1.1.1:53).
+paths:
+  /forward:
+    post:
+      summary: Forward a DNS query to the configured upstream resolver.
+      description: >
+        Represents a single tester packet arriving over UDP port 2053. Each request MUST contain at least
+        one question; when multiple questions are provided, the server will split them into individual
+        upstream lookups and merge the answers back into one response.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DnsPacket"
+      responses:
+        "200":
+          description: Successful forwarding — upstream answers returned to the tester.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DnsPacket"
+        "504":
+          description: Upstream timeout (≥200 ms) or network failure; mapped to DNS SERVFAIL.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServfailResponse"
+components:
+  schemas:
+    DnsPacket:
+      type: object
+      required: [header, questions]
+      properties:
+        header:
+          $ref: "#/components/schemas/DnsHeader"
+        questions:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/DnsQuestion"
+        answers:
+          type: array
+          items:
+            $ref: "#/components/schemas/DnsAnswer"
+    DnsHeader:
+      type: object
+      required: [id, qr, opcode, rd, ra, qdcount, ancount, nscount, arcount, rcode]
+      properties:
+        id: { type: integer, format: uint16 }
+        qr: { type: integer, enum: [0, 1], description: "0=request, 1=response" }
+        opcode: { type: integer, format: uint4, description: "Always 0 (standard query)" }
+        aa: { type: integer, enum: [0, 1] }
+        tc: { type: integer, enum: [0, 1] }
+        rd: { type: integer, enum: [0, 1], description: "Recursion desired bit mirrored from tester request" }
+        ra: { type: integer, enum: [0, 1] }
+        z: { type: integer, enum: [0], description: "Reserved bits MUST stay zero" }
+        ad: { type: integer, enum: [0, 1] }
+        cd: { type: integer, enum: [0, 1] }
+        rcode: { type: integer, enum: [0, 2], description: "0=NOERROR, 2=SERVFAIL for timeouts/errors" }
+        qdcount: { type: integer, format: uint16 }
+        ancount: { type: integer, format: uint16 }
+        nscount: { type: integer, format: uint16, description: "Always 0 per tester guarantee" }
+        arcount: { type: integer, format: uint16, description: "Always 0 per tester guarantee" }
+    DnsQuestion:
+      type: object
+      required: [qname, qtype, qclass]
+      properties:
+        qname:
+          type: string
+          description: Fully qualified domain name expressed as dotted labels (e.g., "example.com").
+        qtype:
+          type: integer
+          enum: [1]
+          description: "Question type (A) supported in this stage."
+        qclass:
+          type: integer
+          enum: [1]
+          description: "Class IN."
+    DnsAnswer:
+      type: object
+      required: [name, type, class, ttl, rdlength, rdata]
+      properties:
+        name:
+          type: string
+          description: Uncompressed domain name identical to the matching question.
+        type:
+          type: integer
+          enum: [1]
+        class:
+          type: integer
+          enum: [1]
+        ttl:
+          type: integer
+          description: Propagated from upstream response.
+        rdlength:
+          type: integer
+          enum: [4]
+        rdata:
+          type: string
+          pattern: "^([0-9]{1,3}\\.){3}[0-9]{1,3}$"
+          description: IPv4 address returned by the upstream resolver.
+    ServfailResponse:
+      allOf:
+        - $ref: "#/components/schemas/DnsPacket"
+      description: >
+        Mirrors the tester’s question section, sets `rcode=2`, `ancount=0`, and `answers=[]`.

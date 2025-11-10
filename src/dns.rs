@@ -1,26 +1,7 @@
-use bytes::{BufMut, BytesMut};
 use std::convert::TryInto;
 
 pub const HEADER_LEN: usize = 12;
 const MAX_POINTER_HOPS: usize = 10;
-
-#[derive(Clone, Copy, Debug)]
-pub struct AnswerConfig {
-    pub ttl_seconds: u32,
-    pub ipv4: [u8; 4],
-}
-
-impl AnswerConfig {
-    pub const fn new(ipv4: [u8; 4], ttl_seconds: u32) -> Self {
-        Self { ttl_seconds, ipv4 }
-    }
-}
-
-pub const ANSWER_CONFIG: AnswerConfig = AnswerConfig::new([8, 8, 8, 8], 60);
-
-pub const fn default_answer_config() -> AnswerConfig {
-    ANSWER_CONFIG
-}
 
 #[derive(Clone, Copy, Debug)]
 pub struct DnsHeaderRequest {
@@ -59,18 +40,20 @@ pub struct DnsHeaderResponse {
     pub ancount: u16,
     pub nscount: u16,
     pub arcount: u16,
+    pub rcode: u8,
 }
 
 impl DnsHeaderResponse {
-    pub fn from_request(request: &DnsHeaderRequest) -> Self {
+    pub fn with_counts_and_rcode(request: &DnsHeaderRequest, ancount: u16, rcode: u8) -> Self {
         Self {
             id: request.id,
             opcode: request.opcode(),
             rd: request.rd(),
             qdcount: request.qdcount,
-            ancount: request.qdcount,
+            ancount,
             nscount: 0,
             arcount: 0,
+            rcode,
         }
     }
 
@@ -82,8 +65,7 @@ impl DnsHeaderResponse {
         if self.rd {
             flags |= 1 << 8;
         }
-        let rcode = if self.opcode == 0 { 0 } else { 4 };
-        flags |= rcode as u16;
+        flags |= (self.rcode & 0x0F) as u16;
         buffer[2..4].copy_from_slice(&flags.to_be_bytes());
         buffer[4..6].copy_from_slice(&self.qdcount.to_be_bytes());
         buffer[6..8].copy_from_slice(&self.ancount.to_be_bytes());
@@ -125,32 +107,7 @@ impl DecodedQuestion {
     }
 }
 
-pub fn build_dns_response(request: &[u8]) -> Option<Vec<u8>> {
-    build_dns_response_with_config(request, default_answer_config())
-}
-
-fn build_dns_response_with_config(request: &[u8], config: AnswerConfig) -> Option<Vec<u8>> {
-    let header = DnsHeaderRequest::parse(request).ok()?;
-    if header.qdcount == 0 {
-        return None;
-    }
-    let questions = parse_questions(request, header.qdcount)?;
-    let question_bytes = serialize_questions(&questions);
-    let answers_bytes = serialize_answers(&questions, &config);
-
-    let header_response = DnsHeaderResponse::from_request(&header);
-
-    let mut response = Vec::with_capacity(HEADER_LEN + question_bytes.len() + answers_bytes.len());
-    let mut header_buf = [0u8; HEADER_LEN];
-    header_response.write_into(&mut header_buf);
-    response.extend_from_slice(&header_buf);
-    response.extend_from_slice(&question_bytes);
-    response.extend_from_slice(&answers_bytes);
-
-    Some(response)
-}
-
-fn parse_questions(packet: &[u8], qdcount: u16) -> Option<Vec<DecodedQuestion>> {
+pub fn parse_questions(packet: &[u8], qdcount: u16) -> Option<Vec<DecodedQuestion>> {
     let mut offset = HEADER_LEN;
     let mut questions = Vec::with_capacity(qdcount as usize);
     for _ in 0..qdcount {
@@ -223,7 +180,7 @@ fn decode_name(packet: &[u8], offset: usize) -> Option<(Vec<u8>, usize)> {
     Some((name, consumed.unwrap_or(cursor)))
 }
 
-fn serialize_questions(questions: &[DecodedQuestion]) -> Vec<u8> {
+pub fn encode_questions(questions: &[DecodedQuestion]) -> Vec<u8> {
     let mut buffer = Vec::new();
     for question in questions {
         buffer.extend_from_slice(&question.name);
@@ -231,17 +188,4 @@ fn serialize_questions(questions: &[DecodedQuestion]) -> Vec<u8> {
         buffer.extend_from_slice(&question.qclass.to_be_bytes());
     }
     buffer
-}
-
-fn serialize_answers(questions: &[DecodedQuestion], config: &AnswerConfig) -> Vec<u8> {
-    let mut buffer = BytesMut::with_capacity(questions.len() * 20);
-    for question in questions {
-        buffer.put_slice(&question.name);
-        buffer.put_u16(1);
-        buffer.put_u16(1);
-        buffer.put_u32(config.ttl_seconds);
-        buffer.put_u16(4);
-        buffer.put_slice(&config.ipv4);
-    }
-    buffer.to_vec()
 }

@@ -30,9 +30,10 @@ Time to move on to the next stage!
 Note: This section is for stages 2 and beyond.
 
 1. Ensure you have `cargo (1.87)` installed locally
-1. Run `./your_program.sh` to run your program, which is implemented in
-   `src/main.rs`. This command compiles your Rust project, so it might be slow
-   the first time you run it. Subsequent runs will be fast.
+1. Run `./your_program.sh --resolver 1.1.1.1:53` to start the server (the
+   argument mirrors how the grader invokes your binary). This command compiles
+   your Rust project, so it might be slow the first time you run it. Subsequent
+   runs will be much faster.
 1. Commit your changes and run `git push origin master` to submit your solution
    to CodeCrafters. Test output will be streamed to your terminal.
 
@@ -57,9 +58,9 @@ the fixed header was sent.
 - The encoded labels appear immediately after the 12-byte header and should
   read `0c 63 6f 64 65 63 72 61 66 74 65 72 73 02 69 6f 00` followed by
   `00 01 00 01` for Type and Class.
-- If your local probes or grader output show fewer bytes, double-check that
-  `build_response_packet()` (see `src/dns.rs`) is used everywhere the server
-  responds.
+- If your local probes or grader output show fewer bytes, double-check the
+  response assembly logic in `src/main.rs` to ensure the DNS header and
+  question bytes are always written before answers.
 
 ## Manual header verification checklist
 
