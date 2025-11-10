@@ -1,0 +1,50 @@
+openapi: 3.1.0
+info:
+  title: DNS Header Echo Contract
+  version: "0.1.0"
+servers:
+  - url: udp://localhost:2053
+    description: Codecrafters UDP listener
+paths:
+  /dns/header:
+    post:
+      summary: Send a binary DNS query and receive a response with mirrored header fields.
+      description: >-
+        Models the behavior of the UDP server. Request/response bodies are raw DNS packets
+        represented as binary streams.
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+              description: DNS query where bytes 0-11 form the header.
+      responses:
+        "200":
+          description: DNS response echoing header fields per specification.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+                description: Response with matching ID, OPCODE, and RD plus deterministic bits.
+          headers:
+            X-DNS-ID:
+              schema:
+                type: integer
+              description: Mirrors the 16-bit ID extracted from the request.
+            X-DNS-RCODE:
+              schema:
+                type: integer
+              description: 0 for OPCODE 0, 4 otherwise.
+      x-behavior:
+        qr: 1
+        opcode: mirror
+        rd: mirror
+        aa: 0
+        tc: 0
+        ra: 0
+        z: 0
+        rcode: "0 if opcode=0 else 4"
+        counters: mirror

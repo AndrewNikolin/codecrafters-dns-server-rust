@@ -1,7 +1,7 @@
 use bytes::{BufMut, BytesMut};
 use std::convert::TryInto;
 
-const HEADER_LEN: usize = 12;
+pub const HEADER_LEN: usize = 12;
 
 #[derive(Clone, Copy, Debug)]
 pub struct AnswerConfig {
@@ -27,56 +27,90 @@ pub const fn default_answer_config() -> AnswerConfig {
 }
 
 #[derive(Clone, Copy, Debug)]
+pub struct DnsHeaderRequest {
+    pub id: u16,
+    pub flags: u16,
+    pub qdcount: u16,
+    pub ancount: u16,
+    pub nscount: u16,
+    pub arcount: u16,
+}
+
+impl DnsHeaderRequest {
+    pub fn parse(packet: &[u8]) -> Result<Self, ()> {
+        if packet.len() < HEADER_LEN {
+            return Err(());
+        }
+        Ok(Self {
+            id: u16::from_be_bytes([packet[0], packet[1]]),
+            flags: u16::from_be_bytes([packet[2], packet[3]]),
+            qdcount: u16::from_be_bytes([packet[4], packet[5]]),
+            ancount: u16::from_be_bytes([packet[6], packet[7]]),
+            nscount: u16::from_be_bytes([packet[8], packet[9]]),
+            arcount: u16::from_be_bytes([packet[10], packet[11]]),
+        })
+    }
+
+    pub fn opcode(&self) -> u8 {
+        ((self.flags & 0x7800) >> 11) as u8
+    }
+
+    pub fn rd(&self) -> bool {
+        (self.flags & 0x0100) != 0
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
 pub struct DnsHeaderResponse {
-    bytes: [u8; HEADER_LEN],
+    pub id: u16,
+    pub opcode: u8,
+    pub rd: bool,
+    pub qdcount: u16,
+    pub ancount: u16,
+    pub nscount: u16,
+    pub arcount: u16,
 }
 
 impl DnsHeaderResponse {
-    pub const fn new_with_question_count(qdcount: u16) -> Self {
-        let qd_high = (qdcount >> 8) as u8;
-        let qd_low = (qdcount & 0x00FF) as u8;
+    pub fn from_request(request: &DnsHeaderRequest) -> Self {
         Self {
-            bytes: [
-                0x04, 0xD2, // ID = 1234
-                0x80, 0x00, // QR=1, Opcode=0, AA=0, TC=0, RD=0, RA=0, Z=0, RCODE=0
-                qd_high, qd_low, // QDCOUNT
-                0x00, 0x00, // ANCOUNT = 0
-                0x00, 0x00, // NSCOUNT = 0
-                0x00, 0x00, // ARCOUNT = 0
-            ],
+            id: request.id,
+            opcode: request.opcode(),
+            rd: request.rd(),
+            qdcount: request.qdcount,
+            ancount: request.ancount,
+            nscount: request.nscount,
+            arcount: request.arcount,
         }
     }
 
-    pub const fn bytes(&self) -> &[u8; HEADER_LEN] {
-        &self.bytes
+    pub fn write_into(&self, buffer: &mut [u8]) {
+        buffer[..2].copy_from_slice(&self.id.to_be_bytes());
+        let mut flags: u16 = 0;
+        flags |= 1 << 15; // QR = 1 (response)
+        flags |= ((self.opcode & 0x0F) as u16) << 11;
+        if self.rd {
+            flags |= 1 << 8;
+        }
+        // AA, TC, RA, Z bits are intentionally left as zero
+        let rcode = if self.opcode == 0 { 0 } else { 4 };
+        flags |= rcode as u16;
+        buffer[2..4].copy_from_slice(&flags.to_be_bytes());
+        buffer[4..6].copy_from_slice(&self.qdcount.to_be_bytes());
+        buffer[6..8].copy_from_slice(&self.ancount.to_be_bytes());
+        buffer[8..10].copy_from_slice(&self.nscount.to_be_bytes());
+        buffer[10..12].copy_from_slice(&self.arcount.to_be_bytes());
     }
 }
-
-pub const STANDARD_DNS_HEADER: DnsHeaderResponse = DnsHeaderResponse::new_with_question_count(1);
 
 #[derive(Clone, Debug)]
 pub struct DnsQuestion {
     name: Vec<u8>,
-    qtype: u16,
+    _qtype: u16,
     qclass: u16,
 }
 
 impl DnsQuestion {
-    pub fn canonical_codecrafters() -> Self {
-        Self {
-            name: encode_labels(&["codecrafters", "io"]),
-            qtype: 1,
-            qclass: 1,
-        }
-    }
-
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut bytes = self.name.clone();
-        bytes.extend_from_slice(&self.qtype.to_be_bytes());
-        bytes.extend_from_slice(&self.qclass.to_be_bytes());
-        bytes
-    }
-
     pub fn from_packet(packet: &[u8], offset: usize) -> Option<(Self, usize)> {
         let qname_len = qname_wire_length(&packet[offset..])?;
         let name_end = offset + qname_len;
@@ -92,7 +126,7 @@ impl DnsQuestion {
         Some((
             Self {
                 name,
-                qtype,
+                _qtype: qtype,
                 qclass,
             },
             qclass_end,
@@ -172,40 +206,38 @@ pub fn build_codecrafters_answer(config: &AnswerConfig) -> Vec<u8> {
     buffer.to_vec()
 }
 
-pub fn build_dns_response(request: &[u8]) -> Vec<u8> {
+pub fn build_dns_response(request: &[u8]) -> Option<Vec<u8>> {
     build_dns_response_with_config(request, default_answer_config())
-        .unwrap_or_else(build_canonical_response_packet)
 }
 
 fn build_dns_response_with_config(request: &[u8], config: AnswerConfig) -> Option<Vec<u8>> {
-    if request.len() < HEADER_LEN {
-        return None;
-    }
-    let (question, _) = DnsQuestion::from_packet(request, HEADER_LEN)?;
-    let should_answer = question.matches_target(&config);
-    let answer_bytes = should_answer.then(|| build_codecrafters_answer(&config));
-    let answer_len = answer_bytes.as_ref().map_or(0, |bytes| bytes.len());
-
-    let mut response = Vec::with_capacity(request.len() + answer_len);
+    let header = DnsHeaderRequest::parse(request).ok()?;
+    let mut response = Vec::with_capacity(request.len() + 64);
     response.extend_from_slice(request);
-    response[2] |= 0x80; // Set QR bit to signal response
 
-    let ancount = answer_bytes.as_ref().map_or(0u16, |_| 1u16);
-    response[6..8].copy_from_slice(&ancount.to_be_bytes());
-    response[8..10].copy_from_slice(&0u16.to_be_bytes());
-    response[10..12].copy_from_slice(&0u16.to_be_bytes());
+    let mut header_response = DnsHeaderResponse::from_request(&header);
 
-    if let Some(answer) = answer_bytes {
+    if let Some(answer) = maybe_build_answer(request, &config) {
+        if header_response.ancount == u16::MAX {
+            header_response.ancount = u16::MAX;
+        } else {
+            header_response.ancount = header_response.ancount.saturating_add(1);
+        }
         response.extend_from_slice(&answer);
     }
+
+    header_response.write_into(&mut response[..HEADER_LEN]);
     Some(response)
 }
 
-fn build_canonical_response_packet() -> Vec<u8> {
-    let question = DnsQuestion::canonical_codecrafters();
-    let question_bytes = question.to_bytes();
-    let mut packet = Vec::with_capacity(HEADER_LEN + question_bytes.len());
-    packet.extend_from_slice(STANDARD_DNS_HEADER.bytes());
-    packet.extend_from_slice(&question_bytes);
-    packet
+fn maybe_build_answer(packet: &[u8], config: &AnswerConfig) -> Option<Vec<u8>> {
+    if packet.len() <= HEADER_LEN {
+        return None;
+    }
+    let (question, _) = DnsQuestion::from_packet(packet, HEADER_LEN)?;
+    if question.matches_target(config) {
+        Some(build_codecrafters_answer(config))
+    } else {
+        None
+    }
 }

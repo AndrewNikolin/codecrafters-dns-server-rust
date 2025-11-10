@@ -60,3 +60,32 @@ the fixed header was sent.
 - If your local probes or grader output show fewer bytes, double-check that
   `build_response_packet()` (see `src/dns.rs`) is used everywhere the server
   responds.
+
+## Manual header verification checklist
+
+Use these steps while working on the header parsing/echo stages:
+
+1. Run the server locally (`cargo run --bin main`) so it listens on `127.0.0.1:2053`.
+2. With `dig`, send a standard query and confirm the response echoes the same
+   transaction ID while `qr = 1`:
+   ```bash
+   dig @127.0.0.1 -p 2053 codecrafters.io A +noedns +ignore
+   ```
+3. Craft custom packets to toggle OPCODE/RD bits or send non-standard opcodes.
+   The following Python snippet sends OPCODE 3 (“not implemented”) and prints the echoed header:
+   ```bash
+   python - <<'PY'
+   import socket
+   pkt = bytearray(12)
+   pkt[0:2] = (0x55AA).to_bytes(2, 'big')  # ID
+   pkt[2] = 0b00110000  # QR=0, OPCODE=3, RD=0
+   pkt[5] = 1  # QDCOUNT = 1
+   sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+   sock.sendto(pkt, ("127.0.0.1", 2053))
+   data, _ = sock.recvfrom(512)
+   print("ID:", int.from_bytes(data[0:2], 'big'))
+   print("Flags:", data[2:4].hex())  # QR bit set, RCODE=4 (Not Implemented)
+   PY
+   ```
+4. Finally, send fewer than 12 bytes (e.g., `printf '\\x00\\x01' | nc -u 127.0.0.1 2053`)
+   and ensure the server drops the packet without crashing or emitting a reply.

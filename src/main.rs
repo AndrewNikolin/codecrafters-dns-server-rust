@@ -24,11 +24,14 @@ fn run() -> std::io::Result<()> {
                     size,
                     hex_preview(&buf[..size])
                 );
-                let response = build_dns_response(&buf[..size]);
-                if let Err(err) = socket.send_to(&response, source) {
-                    eprintln!("Failed to send DNS packet to {source}: {err}");
+                if let Some(response) = build_dns_response(&buf[..size]) {
+                    if let Err(err) = socket.send_to(&response, source) {
+                        eprintln!("Failed to send DNS packet to {source}: {err}");
+                    } else {
+                        println!("Sent DNS response ({} bytes) to {}", response.len(), source);
+                    }
                 } else {
-                    println!("Sent DNS response ({} bytes) to {}", response.len(), source);
+                    println!("Dropped malformed DNS packet from {}", source);
                 }
             }
             Err(err) => {
