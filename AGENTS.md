@@ -27,9 +27,9 @@ cargo test [ONLY COMMANDS FOR ACTIVE TECHNOLOGIES][ONLY COMMANDS FOR ACTIVE TECH
 Rust 1.80 (Edition 2021 per Cargo.toml): Follow standard conventions
 
 ## Recent Changes
+- 006-compressed-questions: Added Rust 1.80 (Edition 2021) + `std::net::UdpSocket`, `bytes`, `anyhow`, `thiserror`
 - 005-question-answer: Added Rust 1.80 (Edition 2021) + `std::net::UdpSocket`, `bytes`, `anyhow`, `thiserror`
 - 004-header-parse: Added Rust 1.80 (Edition 2021) + `std::net::UdpSocket`, `bytes` for buffer helpers, `anyhow`, `thiserror`
-- 003-answer-section: Added Rust 1.80 (Edition 2021) + `std::net::UdpSocket`, `bytes` (buffer helpers), `anyhow`, `thiserror`
 
 
 <!-- MANUAL ADDITIONS START -->

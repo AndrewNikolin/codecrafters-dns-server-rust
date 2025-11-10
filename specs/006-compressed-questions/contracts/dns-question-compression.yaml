@@ -1,0 +1,37 @@
+openapi: 3.1.0
+info:
+  title: DNS Question Compression Contract
+  version: "0.1.0"
+servers:
+  - url: udp://localhost:2053
+    description: Codecrafters UDP listener
+paths:
+  /dns/question-compression:
+    post:
+      summary: Send a DNS packet mixing compressed/uncompressed questions.
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+              description: DNS query with header + QDCOUNT>=1 where some QNAMEs use compression pointers.
+      responses:
+        "200":
+          description: DNS response with mirrored questions (uncompressed) and one A-record answer per question.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+                description: Header with ANCOUNT=QDCOUNT followed by uncompressed questions then answers (TTL=60, IP=8.8.8.8).
+          headers:
+            X-DNS-QCount:
+              schema:
+                type: integer
+              description: Number of questions/answers included (mirrors QDCOUNT).
+            X-DNS-Compression:
+              schema:
+                type: string
+              description: "request may use compression; response uses plain labels"

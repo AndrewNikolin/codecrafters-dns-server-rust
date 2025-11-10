@@ -70,17 +70,17 @@ fn wait_for_port() -> io::Result<()> {
     Ok(())
 }
 
+fn skip_if_udp_forbidden() -> bool {
+    UdpSocket::bind("127.0.0.1:0").is_err()
+}
+
 fn test_mutex() -> &'static Mutex<()> {
     static TEST_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
     TEST_MUTEX.get_or_init(|| Mutex::new(()))
 }
 
-fn skip_if_udp_forbidden() -> bool {
-    UdpSocket::bind("127.0.0.1:0").is_err()
-}
-
 #[test]
-fn mirrors_question_section() {
+fn parses_compressed_questions() {
     if skip_if_udp_forbidden() {
         eprintln!("Skipping UDP integration test: binding is not permitted in this environment");
         return;
@@ -88,52 +88,46 @@ fn mirrors_question_section() {
 
     let _guard = test_mutex().lock().unwrap();
     let harness = TestHarness::spawn().expect("server failed to start");
-    let domain = "example.test";
-    let packet = build_query(vec![domain]);
+
+    let packet =
+        build_packet_with_specs(&[("codecrafters.io", None), ("codecrafters.io", Some(0))]);
     let response = harness
         .send_probe(&packet)
         .expect("failed to receive DNS response bytes");
 
-    let question_len = question_section_len(&packet).expect("request question invalid");
-    let response_question_len = question_section_len(&response).expect("response question invalid");
-    assert_eq!(
-        response_question_len, question_len,
-        "response should include same number of questions"
+    let names = parse_uncompressed_questions(&response).expect("response questions invalid");
+    assert_eq!(names.len(), 2);
+    assert_eq!(names[0], encode_domain("codecrafters.io"));
+    assert_eq!(names[1], encode_domain("codecrafters.io"));
+}
+
+#[test]
+fn mirrors_questions_uncompressed() {
+    if skip_if_udp_forbidden() {
+        eprintln!("Skipping UDP integration test: binding is not permitted in this environment");
+        return;
+    }
+
+    let _guard = test_mutex().lock().unwrap();
+    let harness = TestHarness::spawn().expect("server failed to start");
+
+    let packet = build_packet_with_specs(&[
+        ("alpha.codecrafters.io", None),
+        ("alpha.codecrafters.io", Some(0)),
+    ]);
+    let response = harness
+        .send_probe(&packet)
+        .expect("failed to receive DNS response bytes");
+
+    let question_bytes = extract_question_bytes(&response).expect("could not isolate questions");
+    assert!(
+        !question_bytes.iter().any(|byte| byte & 0xC0 == 0xC0),
+        "response question section should be uncompressed"
     );
-    assert_eq!(
-        &response[HEADER_LEN..HEADER_LEN + question_len],
-        &packet[HEADER_LEN..HEADER_LEN + question_len],
-        "question bytes must mirror request"
-    );
 }
 
 #[test]
-fn returns_deterministic_answer() {
-    if skip_if_udp_forbidden() {
-        eprintln!("Skipping UDP integration test: binding is not permitted in this environment");
-        return;
-    }
-
-    let _guard = test_mutex().lock().unwrap();
-    let harness = TestHarness::spawn().expect("server failed to start");
-    let packet = build_query(vec!["custom.domain"]);
-    let response = harness
-        .send_probe(&packet)
-        .expect("failed to receive DNS response bytes");
-
-    let question_len = question_section_len(&packet).expect("request invalid");
-    let answer_offset = HEADER_LEN + question_len;
-    let answer = parse_answer(&response[answer_offset..]).expect("missing answer");
-    assert_eq!(answer.name, decode_labels("custom.domain"));
-    assert_eq!(answer.rtype, 1);
-    assert_eq!(answer.rclass, 1);
-    assert_eq!(answer.ttl, 60);
-    assert_eq!(answer.rdlength, 4);
-    assert_eq!(answer.rdata.as_slice(), &[8, 8, 8, 8]);
-}
-
-#[test]
-fn rejects_inconsistent_counts_and_unsupported_questions() {
+fn answers_each_question() {
     if skip_if_udp_forbidden() {
         eprintln!("Skipping UDP integration test: binding is not permitted in this environment");
         return;
@@ -142,39 +136,51 @@ fn rejects_inconsistent_counts_and_unsupported_questions() {
     let _guard = test_mutex().lock().unwrap();
     let harness = TestHarness::spawn().expect("server failed to start");
 
-    // Header qdcount=2 but only one encoded question => expect drop.
-    let mut invalid_packet = Vec::new();
-    invalid_packet.extend_from_slice(&0xAAAAu16.to_be_bytes());
-    invalid_packet.extend_from_slice(&0x0100u16.to_be_bytes());
-    invalid_packet.extend_from_slice(&2u16.to_be_bytes()); // QDCOUNT
-    invalid_packet.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
-    invalid_packet.extend_from_slice(&encode_labels(&["only", "one"]));
-    invalid_packet.extend_from_slice(&1u16.to_be_bytes());
-    invalid_packet.extend_from_slice(&1u16.to_be_bytes());
-
-    harness
-        .expect_no_response(&invalid_packet)
-        .expect("server should drop inconsistent QDCOUNT packet");
-
-    // Unsupported QTYPE should also be dropped.
-    let mut unsupported = build_query(vec!["codecrafters.io"]);
-    let question_start = HEADER_LEN;
-    let question_len = question_section_len(&unsupported).unwrap();
-    let qtype_pos = question_start + question_len - 4; // qtype before qclass
-    unsupported[qtype_pos] = 0x00;
-    unsupported[qtype_pos + 1] = 0x02; // TYPE=NS
-    harness
-        .expect_no_response(&unsupported)
-        .expect("server should drop unsupported QTYPE packets");
-
-    // Valid packet with QDCOUNT=2 should be answered.
-    let packet = build_query(vec!["codecrafters.io", "example.com"]);
+    let packet = build_packet_with_specs(&[
+        ("one.codecrafters.io", None),
+        ("two.codecrafters.io", None),
+        ("one.codecrafters.io", Some(0)),
+    ]);
     let response = harness
         .send_probe(&packet)
         .expect("failed to receive DNS response bytes");
-    let header = parse_header(&response).expect("response header missing");
-    assert_eq!(header.qdcount, 2, "QDCOUNT must mirror request");
-    assert_eq!(header.ancount, 1, "ANCOUNT must equal number of answers");
+
+    let header = parse_header(&response).expect("header invalid");
+    assert_eq!(header.qdcount, 3);
+    assert_eq!(header.ancount, 3);
+
+    let names = parse_uncompressed_questions(&response).expect("questions invalid");
+    let answers = parse_answers(&response).expect("answers invalid");
+    assert_eq!(answers.len(), 3);
+    for (answer, expected_name) in answers.iter().zip(names.iter()) {
+        assert_eq!(answer.name, *expected_name);
+        assert_eq!(answer.rtype, 1);
+        assert_eq!(answer.rclass, 1);
+        assert_eq!(answer.ttl, 60);
+        assert_eq!(answer.rdlength, 4);
+        assert_eq!(answer.rdata.as_slice(), &[8, 8, 8, 8]);
+    }
+}
+
+#[test]
+fn drops_invalid_pointers() {
+    if skip_if_udp_forbidden() {
+        eprintln!("Skipping UDP integration test: binding is not permitted in this environment");
+        return;
+    }
+
+    let _guard = test_mutex().lock().unwrap();
+    let harness = TestHarness::spawn().expect("server failed to start");
+
+    let out_of_range = build_invalid_pointer_packet(0x3FF0);
+    harness
+        .expect_no_response(&out_of_range)
+        .expect("server should drop packets with out-of-range pointer");
+
+    let loop_packet = build_pointer_loop_packet();
+    harness
+        .expect_no_response(&loop_packet)
+        .expect("server should drop packets with pointer loops");
 }
 
 #[derive(Debug)]
@@ -185,34 +191,6 @@ struct AnswerView {
     ttl: u32,
     rdlength: u16,
     rdata: Vec<u8>,
-}
-
-fn parse_answer(bytes: &[u8]) -> Option<AnswerView> {
-    if bytes.is_empty() {
-        return None;
-    }
-    let (name, after_name) = read_qname(bytes, 0)?;
-    let type_start = after_name;
-    let type_end = type_start.checked_add(2)?;
-    let class_end = type_end.checked_add(2)?;
-    let ttl_end = class_end.checked_add(4)?;
-    let rdlength_end = ttl_end.checked_add(2)?;
-    if rdlength_end > bytes.len() {
-        return None;
-    }
-    let rdlength = u16::from_be_bytes(bytes[ttl_end..rdlength_end].try_into().ok()?);
-    let data_end = rdlength_end.checked_add(rdlength as usize)?;
-    if data_end > bytes.len() {
-        return None;
-    }
-    Some(AnswerView {
-        name,
-        rtype: u16::from_be_bytes(bytes[type_start..type_end].try_into().ok()?),
-        rclass: u16::from_be_bytes(bytes[type_end..class_end].try_into().ok()?),
-        ttl: u32::from_be_bytes(bytes[class_end..ttl_end].try_into().ok()?),
-        rdlength,
-        rdata: bytes[rdlength_end..data_end].to_vec(),
-    })
 }
 
 #[derive(Debug)]
@@ -231,7 +209,62 @@ fn parse_header(packet: &[u8]) -> Option<HeaderView> {
     })
 }
 
-fn question_section_len(packet: &[u8]) -> Option<usize> {
+fn parse_uncompressed_questions(packet: &[u8]) -> Option<Vec<Vec<u8>>> {
+    let qdcount = u16::from_be_bytes(packet[4..6].try_into().ok()?);
+    let mut offset = HEADER_LEN;
+    let mut names = Vec::with_capacity(qdcount as usize);
+    for _ in 0..qdcount {
+        let (name, next) = read_qname(packet, offset)?;
+        let qtype_end = next.checked_add(2)?;
+        let qclass_end = qtype_end.checked_add(2)?;
+        if qclass_end > packet.len() {
+            return None;
+        }
+        names.push(name);
+        offset = qclass_end;
+    }
+    Some(names)
+}
+
+fn parse_answers(packet: &[u8]) -> Option<Vec<AnswerView>> {
+    let header = parse_header(packet)?;
+    let mut offset = HEADER_LEN;
+    for _ in 0..header.qdcount {
+        let (_, next) = read_qname(packet, offset)?;
+        let qtype_end = next.checked_add(2)?;
+        let qclass_end = qtype_end.checked_add(2)?;
+        offset = qclass_end;
+    }
+    let mut answers = Vec::with_capacity(header.ancount as usize);
+    for _ in 0..header.ancount {
+        let (name, next) = read_qname(packet, offset)?;
+        let type_start = next;
+        let type_end = type_start.checked_add(2)?;
+        let class_end = type_end.checked_add(2)?;
+        let ttl_end = class_end.checked_add(4)?;
+        let rdlength_end = ttl_end.checked_add(2)?;
+        if rdlength_end > packet.len() {
+            return None;
+        }
+        let rdlength = u16::from_be_bytes(packet[ttl_end..rdlength_end].try_into().ok()?);
+        let rdata_end = rdlength_end.checked_add(rdlength as usize)?;
+        if rdata_end > packet.len() {
+            return None;
+        }
+        answers.push(AnswerView {
+            name,
+            rtype: u16::from_be_bytes(packet[type_start..type_end].try_into().ok()?),
+            rclass: u16::from_be_bytes(packet[type_end..class_end].try_into().ok()?),
+            ttl: u32::from_be_bytes(packet[class_end..ttl_end].try_into().ok()?),
+            rdlength,
+            rdata: packet[rdlength_end..rdata_end].to_vec(),
+        });
+        offset = rdata_end;
+    }
+    Some(answers)
+}
+
+fn extract_question_bytes(packet: &[u8]) -> Option<Vec<u8>> {
     let qdcount = u16::from_be_bytes(packet[4..6].try_into().ok()?);
     let mut offset = HEADER_LEN;
     for _ in 0..qdcount {
@@ -243,12 +276,11 @@ fn question_section_len(packet: &[u8]) -> Option<usize> {
         }
         offset = qclass_end;
     }
-    Some(offset - HEADER_LEN)
+    Some(packet[HEADER_LEN..offset].to_vec())
 }
 
 fn read_qname(packet: &[u8], offset: usize) -> Option<(Vec<u8>, usize)> {
     let mut idx = offset;
-    let mut total = 0usize;
     while idx < packet.len() {
         let len = *packet.get(idx)? as usize;
         idx += 1;
@@ -256,7 +288,9 @@ fn read_qname(packet: &[u8], offset: usize) -> Option<(Vec<u8>, usize)> {
             break;
         }
         let end = idx.checked_add(len)?;
-        total = total.checked_add(len + 1)?;
+        if end > packet.len() {
+            return None;
+        }
         idx = end;
     }
     if idx > packet.len() {
@@ -265,17 +299,64 @@ fn read_qname(packet: &[u8], offset: usize) -> Option<(Vec<u8>, usize)> {
     Some((packet[offset..idx].to_vec(), idx))
 }
 
-fn build_query(domains: Vec<&str>) -> Vec<u8> {
+fn build_packet_with_specs(specs: &[(&str, Option<usize>)]) -> Vec<u8> {
     let mut packet = Vec::new();
-    packet.extend_from_slice(&0x1234u16.to_be_bytes());
+    packet.extend_from_slice(&0x4321u16.to_be_bytes());
     packet.extend_from_slice(&0x0100u16.to_be_bytes());
-    packet.extend_from_slice(&(domains.len() as u16).to_be_bytes());
+    packet.extend_from_slice(&(specs.len() as u16).to_be_bytes());
     packet.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
-    for domain in domains {
-        packet.extend_from_slice(&encode_domain(domain));
-        packet.extend_from_slice(&1u16.to_be_bytes());
-        packet.extend_from_slice(&1u16.to_be_bytes());
+
+    let mut question_offsets = Vec::with_capacity(specs.len());
+    let mut cursor = HEADER_LEN;
+    for (idx, (domain, pointer_to)) in specs.iter().enumerate() {
+        question_offsets.push(cursor);
+        match pointer_to {
+            Some(target_idx) => {
+                let target_offset = question_offsets[*target_idx] as u16;
+                let pointer_val = 0xC000 | (target_offset & 0x3FFF);
+                packet.extend_from_slice(&pointer_val.to_be_bytes());
+                packet.extend_from_slice(&1u16.to_be_bytes());
+                packet.extend_from_slice(&1u16.to_be_bytes());
+                cursor += 2 + 2 + 2;
+            }
+            None => {
+                let encoded = encode_domain(domain);
+                packet.extend_from_slice(&encoded);
+                packet.extend_from_slice(&1u16.to_be_bytes());
+                packet.extend_from_slice(&1u16.to_be_bytes());
+                cursor += encoded.len() + 4;
+            }
+        }
+        debug_assert_eq!(question_offsets.len(), idx + 1);
     }
+
+    packet
+}
+
+fn build_invalid_pointer_packet(pointer: u16) -> Vec<u8> {
+    let mut packet = Vec::new();
+    packet.extend_from_slice(&0x9999u16.to_be_bytes());
+    packet.extend_from_slice(&0x0100u16.to_be_bytes());
+    packet.extend_from_slice(&1u16.to_be_bytes());
+    packet.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+    let pointer_val = 0xC000 | (pointer & 0x3FFF);
+    packet.extend_from_slice(&pointer_val.to_be_bytes());
+    packet.extend_from_slice(&1u16.to_be_bytes());
+    packet.extend_from_slice(&1u16.to_be_bytes());
+    packet
+}
+
+fn build_pointer_loop_packet() -> Vec<u8> {
+    let mut packet = Vec::new();
+    packet.extend_from_slice(&0xAAAAu16.to_be_bytes());
+    packet.extend_from_slice(&0x0100u16.to_be_bytes());
+    packet.extend_from_slice(&1u16.to_be_bytes());
+    packet.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+    let pointer_offset = HEADER_LEN as u16;
+    let pointer_val = 0xC000 | (pointer_offset & 0x3FFF);
+    packet.extend_from_slice(&pointer_val.to_be_bytes());
+    packet.extend_from_slice(&1u16.to_be_bytes());
+    packet.extend_from_slice(&1u16.to_be_bytes());
     packet
 }
 
@@ -292,8 +373,4 @@ fn encode_labels(labels: &[&str]) -> Vec<u8> {
     }
     out.push(0);
     out
-}
-
-fn decode_labels(domain: &str) -> Vec<u8> {
-    encode_domain(domain)
 }

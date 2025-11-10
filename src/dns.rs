@@ -1,7 +1,9 @@
 use bytes::{BufMut, BytesMut};
+use std::collections::HashSet;
 use std::convert::TryInto;
 
 pub const HEADER_LEN: usize = 12;
+const MAX_POINTER_HOPS: usize = 10;
 
 #[derive(Clone, Copy, Debug)]
 pub struct AnswerConfig {
@@ -67,7 +69,7 @@ impl DnsHeaderResponse {
             opcode: request.opcode(),
             rd: request.rd(),
             qdcount: request.qdcount,
-            ancount: 1,
+            ancount: request.qdcount,
             nscount: 0,
             arcount: 0,
         }
@@ -92,15 +94,15 @@ impl DnsHeaderResponse {
 }
 
 #[derive(Clone, Debug)]
-pub struct DnsQuestion {
-    name: Vec<u8>,
-    qtype: u16,
-    qclass: u16,
+pub struct DecodedQuestion {
+    pub name: Vec<u8>,
+    pub qtype: u16,
+    pub qclass: u16,
 }
 
-impl DnsQuestion {
+impl DecodedQuestion {
     pub fn from_packet(packet: &[u8], offset: usize) -> Option<(Self, usize)> {
-        let (name, name_end) = read_qname(packet, offset)?;
+        let (name, name_end) = decode_name(packet, offset)?;
         let qtype_start = name_end;
         let qtype_end = qtype_start.checked_add(2)?;
         let qclass_end = qtype_end.checked_add(2)?;
@@ -122,10 +124,6 @@ impl DnsQuestion {
     pub fn is_supported(&self) -> bool {
         self.qtype == 1 && self.qclass == 1
     }
-
-    pub fn name(&self) -> &[u8] {
-        &self.name
-    }
 }
 
 pub fn build_dns_response(request: &[u8]) -> Option<Vec<u8>> {
@@ -137,77 +135,115 @@ fn build_dns_response_with_config(request: &[u8], config: AnswerConfig) -> Optio
     if header.qdcount == 0 {
         return None;
     }
-    let (question, questions_end_offset) = parse_question_section(request, header.qdcount)?;
-    if !question.is_supported() {
-        return None;
-    }
+    let questions = parse_questions(request, header.qdcount)?;
+    let question_bytes = serialize_questions(&questions);
+    let answers_bytes = serialize_answers(&questions, &config);
 
-    let question_bytes = &request[HEADER_LEN..questions_end_offset];
-    let answer_bytes = build_answer_section(question.name(), &config);
+    let header_response = DnsHeaderResponse::from_request(&header);
 
-    let mut header_response = DnsHeaderResponse::from_request(&header);
-    header_response.ancount = 1;
-    header_response.nscount = 0;
-    header_response.arcount = 0;
-
-    let mut response = Vec::with_capacity(HEADER_LEN + question_bytes.len() + answer_bytes.len());
+    let mut response = Vec::with_capacity(HEADER_LEN + question_bytes.len() + answers_bytes.len());
     let mut header_buf = [0u8; HEADER_LEN];
     header_response.write_into(&mut header_buf);
     response.extend_from_slice(&header_buf);
-    response.extend_from_slice(question_bytes);
-    response.extend_from_slice(&answer_bytes);
+    response.extend_from_slice(&question_bytes);
+    response.extend_from_slice(&answers_bytes);
+
     Some(response)
 }
 
-fn parse_question_section(packet: &[u8], qdcount: u16) -> Option<(DnsQuestion, usize)> {
+fn parse_questions(packet: &[u8], qdcount: u16) -> Option<Vec<DecodedQuestion>> {
     let mut offset = HEADER_LEN;
-    let mut first_question: Option<DnsQuestion> = None;
-    for idx in 0..qdcount {
-        let (question, next_offset) = DnsQuestion::from_packet(packet, offset)?;
+    let mut questions = Vec::with_capacity(qdcount as usize);
+    for _ in 0..qdcount {
+        let (question, next_offset) = DecodedQuestion::from_packet(packet, offset)?;
         if !question.is_supported() {
             return None;
         }
-        if idx == 0 {
-            first_question = Some(question.clone());
-        }
+        questions.push(question);
         offset = next_offset;
     }
-    first_question.map(|q| (q, offset))
+    Some(questions)
 }
 
-fn read_qname(packet: &[u8], offset: usize) -> Option<(Vec<u8>, usize)> {
-    let mut idx = offset;
-    let mut total_len = 0usize;
-    while idx < packet.len() {
-        let len = *packet.get(idx)? as usize;
-        idx += 1;
-        if len == 0 {
+fn decode_name(packet: &[u8], offset: usize) -> Option<(Vec<u8>, usize)> {
+    let mut cursor = offset;
+    let mut consumed_offset: Option<usize> = None;
+    let mut hops = 0;
+    let mut visited_pointers = HashSet::new();
+    let mut name = Vec::new();
+
+    loop {
+        if cursor >= packet.len() {
+            return None;
+        }
+        let len = packet[cursor];
+        if len & 0xC0 == 0xC0 {
+            if cursor + 1 >= packet.len() {
+                return None;
+            }
+            if consumed_offset.is_none() {
+                consumed_offset = Some(cursor + 2);
+            }
+            let pointer = ((((len & 0x3F) as u16) << 8) | packet[cursor + 1] as u16) as usize;
+            if pointer >= packet.len() {
+                return None;
+            }
+            if !visited_pointers.insert(pointer) {
+                return None;
+            }
+            hops += 1;
+            if hops > MAX_POINTER_HOPS {
+                return None;
+            }
+            cursor = pointer;
+            continue;
+        } else if len == 0 {
+            if consumed_offset.is_none() {
+                consumed_offset = Some(cursor + 1);
+            }
             break;
+        } else {
+            let label_len = len as usize;
+            let start = cursor + 1;
+            let end = start.checked_add(label_len)?;
+            if label_len == 0 || label_len > 63 || end > packet.len() {
+                return None;
+            }
+            if name.len() + label_len + 1 > 255 {
+                return None;
+            }
+            name.push(label_len as u8);
+            name.extend_from_slice(&packet[start..end]);
+            cursor = end;
+            if consumed_offset.is_none() {
+                consumed_offset = Some(cursor);
+            }
         }
-        if len > 63 {
-            return None;
-        }
-        let end = idx.checked_add(len)?;
-        total_len = total_len.checked_add(len + 1)?;
-        if total_len > 255 {
-            return None;
-        }
-        idx = end;
     }
-    if idx > packet.len() {
-        return None;
-    }
-    let name_end = idx;
-    Some((packet[offset..name_end].to_vec(), idx))
+
+    name.push(0);
+    Some((name, consumed_offset.unwrap_or(cursor)))
 }
 
-fn build_answer_section(name: &[u8], config: &AnswerConfig) -> Vec<u8> {
-    let mut buffer = BytesMut::with_capacity(name.len() + 16);
-    buffer.put_slice(name);
-    buffer.put_u16(1); // TYPE A
-    buffer.put_u16(1); // CLASS IN
-    buffer.put_u32(config.ttl_seconds);
-    buffer.put_u16(4); // RDLENGTH
-    buffer.put_slice(&config.ipv4);
+fn serialize_questions(questions: &[DecodedQuestion]) -> Vec<u8> {
+    let mut buffer = Vec::new();
+    for question in questions {
+        buffer.extend_from_slice(&question.name);
+        buffer.extend_from_slice(&question.qtype.to_be_bytes());
+        buffer.extend_from_slice(&question.qclass.to_be_bytes());
+    }
+    buffer
+}
+
+fn serialize_answers(questions: &[DecodedQuestion], config: &AnswerConfig) -> Vec<u8> {
+    let mut buffer = BytesMut::with_capacity(questions.len() * 20);
+    for question in questions {
+        buffer.put_slice(&question.name);
+        buffer.put_u16(1);
+        buffer.put_u16(1);
+        buffer.put_u32(config.ttl_seconds);
+        buffer.put_u16(4);
+        buffer.put_slice(&config.ipv4);
+    }
     buffer.to_vec()
 }

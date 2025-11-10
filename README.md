@@ -98,3 +98,10 @@ Use these steps while working on the header parsing/echo stages:
    regardless of the domain queried.
 3. Craft a packet with QTYPE or QCLASS ≠ 1 to confirm the server drops it.
 4. Craft a packet where QDCOUNT>1 but only one question is encoded to ensure the server drops inconsistent payloads.
+
+## Manual compression verification checklist
+
+1. Build a packet whose second question uses a compression pointer to the first. Verify the response QUESTION section lists both names uncompressed (no `0xC0` pointers).
+2. Mix compressed/uncompressed questions (e.g., three total) and ensure ANCOUNT equals QDCOUNT and every ANSWER uses the matching uncompressed name with TTL 60 and IP `8.8.8.8`.
+3. Send a packet with an out-of-range pointer and confirm the server drops it without responding.
+4. Create a pointer loop (two offsets referencing each other) and check that the hop limit triggers a drop (no response).
