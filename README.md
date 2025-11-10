@@ -89,3 +89,12 @@ Use these steps while working on the header parsing/echo stages:
    ```
 4. Finally, send fewer than 12 bytes (e.g., `printf '\\x00\\x01' | nc -u 127.0.0.1 2053`)
    and ensure the server drops the packet without crashing or emitting a reply.
+
+## Manual question & answer verification checklist
+
+1. With the server running, issue `dig @127.0.0.1 -p 2053 example.test A +noedns +ignore`
+   and compare the QUESTION sections in request/response—they should match byte for byte.
+2. Observe the ANSWER section: TYPE=1, CLASS=1, TTL=60, and RDATA `8.8.8.8`
+   regardless of the domain queried.
+3. Craft a packet with QTYPE or QCLASS ≠ 1 to confirm the server drops it.
+4. Craft a packet where QDCOUNT>1 but only one question is encoded to ensure the server drops inconsistent payloads.

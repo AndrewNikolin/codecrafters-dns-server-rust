@@ -1,0 +1,47 @@
+openapi: 3.1.0
+info:
+  title: DNS Question & Answer Echo
+  version: "0.1.0"
+servers:
+  - url: udp://localhost:2053
+    description: Logical representation of the Codecrafters UDP listener
+paths:
+  /dns/question-answer:
+    post:
+      summary: Send a DNS query and receive mirrored question + deterministic answer.
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+              description: Raw DNS packet (header + question) with QTYPE=1, QCLASS=1.
+      responses:
+        "200":
+          description: DNS response with mirrored header/question and single A-record answer.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+                description: Raw DNS packet: header (QR=1, ANCOUNT=1) + mirrored question + answer (8.8.8.8).
+          headers:
+            X-DNS-QNAME:
+              schema:
+                type: string
+              description: Decoded domain name echoed back.
+            X-DNS-RDATA:
+              schema:
+                type: string
+              description: IPv4 payload returned (default 8.8.8.8).
+      x-behavior:
+        qtype: 1
+        qclass: 1
+        ttl: 60
+        rdata: "8.8.8.8"
+        counts:
+          qdcount: mirror
+          ancount: 1
+          nscount: 0
+          arcount: 0
