@@ -1,3 +1,4 @@
+use std::convert::TryInto;
 use std::io;
 use std::net::UdpSocket;
 use std::process::{Child, Command, Stdio};
@@ -8,6 +9,7 @@ use std::time::Duration;
 const SERVER_ADDR: &str = "127.0.0.1:2053";
 const STARTUP_DELAY: Duration = Duration::from_millis(50);
 const RESPONSE_TIMEOUT: Duration = Duration::from_millis(500);
+const HEADER_LEN: usize = 12;
 
 pub struct TestHarness {
     child: Child,
@@ -54,10 +56,7 @@ fn wait_for_port() -> io::Result<()> {
 }
 
 pub fn skip_if_udp_forbidden() -> bool {
-    match UdpSocket::bind("127.0.0.1:0") {
-        Ok(_) => false,
-        Err(_) => true,
-    }
+    UdpSocket::bind("127.0.0.1:0").is_err()
 }
 
 fn test_mutex() -> &'static Mutex<()> {
@@ -65,95 +64,212 @@ fn test_mutex() -> &'static Mutex<()> {
     TEST_MUTEX.get_or_init(|| Mutex::new(()))
 }
 
-const HEADER_LEN: usize = 12;
-const EXPECTED_HEADER: [u8; HEADER_LEN] = [
-    0x04, 0xD2, 0x80, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-];
-const EXPECTED_QUESTION: [u8; 21] = [
-    0x0c, b'c', b'o', b'd', b'e', b'c', b'r', b'a', b'f', b't', b'e', b'r', b's', 0x02, b'i', b'o',
-    0x00, 0x00, 0x01, 0x00, 0x01,
-];
+#[test]
+fn returns_answer_section_for_codecrafters() {
+    if skip_if_udp_forbidden() {
+        eprintln!("Skipping UDP integration test: binding is not permitted in this environment");
+        return;
+    }
 
-fn assert_canonical_response(response: &[u8]) {
+    let _guard = test_mutex().lock().expect("failed to acquire test mutex");
+    let harness = TestHarness::spawn().expect("server failed to start");
+    let query = build_query("codecrafters.io");
+    let response = harness
+        .send_probe(&query)
+        .expect("failed to receive DNS response bytes");
+
+    let ancount = u16::from_be_bytes([response[6], response[7]]);
+    assert_eq!(ancount, 1, "expected a single answer record");
+
+    let answer = parse_answer_record(&response).expect("missing answer record");
+    assert_eq!(
+        answer.name().as_deref(),
+        Some("codecrafters.io"),
+        "answer NAME should match queried domain"
+    );
+    assert_eq!(answer.rtype, 1, "answer TYPE should be A");
+    assert_eq!(answer.rclass, 1, "answer CLASS should be IN");
+    assert_eq!(
+        answer.rdata.as_slice(),
+        &[8, 8, 8, 8],
+        "A record payload must return 8.8.8.8"
+    );
+}
+
+#[test]
+fn ttl_remains_constant_across_responses() {
+    if skip_if_udp_forbidden() {
+        eprintln!("Skipping UDP integration test: binding is not permitted in this environment");
+        return;
+    }
+
+    let _guard = test_mutex().lock().expect("failed to acquire test mutex");
+    let harness = TestHarness::spawn().expect("server failed to start");
+    let query = build_query("codecrafters.io");
+
+    let response_one = harness.send_probe(&query).expect("first response failed");
+    let response_two = harness.send_probe(&query).expect("second response failed");
+
+    let ttl_one = parse_answer_record(&response_one)
+        .expect("missing answer")
+        .ttl;
+    let ttl_two = parse_answer_record(&response_two)
+        .expect("missing answer")
+        .ttl;
+    assert_eq!(ttl_one, 60, "TTL should default to 60 seconds");
+    assert_eq!(
+        ttl_one, ttl_two,
+        "TTL should not drift across consecutive responses"
+    );
+}
+
+#[test]
+fn non_target_queries_do_not_receive_answers() {
+    if skip_if_udp_forbidden() {
+        eprintln!("Skipping UDP integration test: binding is not permitted in this environment");
+        return;
+    }
+
+    let _guard = test_mutex().lock().expect("failed to acquire test mutex");
+    let harness = TestHarness::spawn().expect("server failed to start");
+    let query = build_query("example.com");
+    let response = harness
+        .send_probe(&query)
+        .expect("failed to receive DNS response bytes");
+
+    let ancount = u16::from_be_bytes([response[6], response[7]]);
+    assert_eq!(ancount, 0, "non-target queries must not include answers");
     assert!(
-        response.len() >= HEADER_LEN,
-        "response too short: expected at least {} bytes, got {}",
-        HEADER_LEN,
-        response.len()
-    );
-    let (header, rest) = response.split_at(HEADER_LEN);
-    assert_eq!(
-        header, EXPECTED_HEADER,
-        "header bytes differed from expected canonical header"
-    );
-    assert_eq!(
-        rest, EXPECTED_QUESTION,
-        "question bytes differed from canonical codecrafters.io question"
+        parse_answer_record(&response).is_none(),
+        "no answer bytes should be appended for other domains"
     );
 }
 
-#[test]
-fn responds_with_question_section() {
-    if skip_if_udp_forbidden() {
-        eprintln!("Skipping UDP integration test: binding is not permitted in this environment");
-        return;
-    }
-
-    let _guard = test_mutex().lock().expect("failed to acquire test mutex");
-    let harness = TestHarness::spawn().expect("server failed to start");
-    let response = harness
-        .send_probe(&[0xAA, 0xBB, 0xCC])
-        .expect("failed to receive DNS response bytes");
-    assert_canonical_response(&response);
+fn build_query(domain: &str) -> Vec<u8> {
+    let mut packet = Vec::new();
+    packet.extend_from_slice(&[0x12, 0x34]); // ID
+    packet.extend_from_slice(&[0x01, 0x00]); // standard flags
+    packet.extend_from_slice(&[0x00, 0x01]); // QDCOUNT
+    packet.extend_from_slice(&[0x00, 0x00]); // ANCOUNT
+    packet.extend_from_slice(&[0x00, 0x00]); // NSCOUNT
+    packet.extend_from_slice(&[0x00, 0x00]); // ARCOUNT
+    packet.extend_from_slice(&encode_domain(domain));
+    packet.extend_from_slice(&1u16.to_be_bytes()); // QTYPE A
+    packet.extend_from_slice(&1u16.to_be_bytes()); // QCLASS IN
+    packet
 }
 
-#[test]
-fn responds_to_empty_payload() {
-    if skip_if_udp_forbidden() {
-        eprintln!("Skipping UDP integration test: binding is not permitted in this environment");
-        return;
+fn parse_answer_record(response: &[u8]) -> Option<AnswerRecord> {
+    if response.len() <= HEADER_LEN {
+        return None;
+    }
+    let question_end = question_end(response)?;
+    if question_end >= response.len() {
+        return None;
     }
 
-    let _guard = test_mutex().lock().expect("failed to acquire test mutex");
-    let harness = TestHarness::spawn().expect("server failed to start");
-    let response = harness
-        .send_probe(&[])
-        .expect("failed to receive DNS response bytes");
-    assert_canonical_response(&response);
+    let name_len = qname_wire_length(&response[question_end..])?;
+    let name_end = question_end + name_len;
+    let type_start = name_end;
+    let type_end = type_start.checked_add(2)?;
+    let class_end = type_end.checked_add(2)?;
+    let ttl_end = class_end.checked_add(4)?;
+    let rdlength_end = ttl_end.checked_add(2)?;
+    if rdlength_end > response.len() {
+        return None;
+    }
+    let rdlength = u16::from_be_bytes(response[ttl_end..rdlength_end].try_into().ok()?) as usize;
+    let rdata_end = rdlength_end.checked_add(rdlength)?;
+    if rdata_end > response.len() {
+        return None;
+    }
+
+    Some(AnswerRecord {
+        name: response[question_end..name_end].to_vec(),
+        rtype: u16::from_be_bytes(response[type_start..type_end].try_into().ok()?),
+        rclass: u16::from_be_bytes(response[type_end..class_end].try_into().ok()?),
+        ttl: u32::from_be_bytes(response[class_end..ttl_end].try_into().ok()?),
+        rdata: response[rdlength_end..rdata_end].to_vec(),
+    })
 }
 
-#[test]
-fn responds_to_large_payload() {
-    if skip_if_udp_forbidden() {
-        eprintln!("Skipping UDP integration test: binding is not permitted in this environment");
-        return;
+fn question_end(packet: &[u8]) -> Option<usize> {
+    if packet.len() <= HEADER_LEN {
+        return None;
     }
-
-    let _guard = test_mutex().lock().expect("failed to acquire test mutex");
-    let payload = vec![0u8; 600];
-    let harness = TestHarness::spawn().expect("server failed to start");
-    let response = harness
-        .send_probe(&payload)
-        .expect("failed to receive DNS response bytes");
-    assert_canonical_response(&response);
+    let mut idx = HEADER_LEN;
+    while idx < packet.len() {
+        let len = *packet.get(idx)? as usize;
+        idx += 1;
+        if len == 0 {
+            break;
+        }
+        idx = idx.checked_add(len)?;
+    }
+    let qtype_end = idx.checked_add(2)?;
+    let qclass_end = qtype_end.checked_add(2)?;
+    if qclass_end <= packet.len() {
+        Some(qclass_end)
+    } else {
+        None
+    }
 }
 
-#[test]
-fn responds_with_canonical_question_for_alternate_domain() {
-    if skip_if_udp_forbidden() {
-        eprintln!("Skipping UDP integration test: binding is not permitted in this environment");
-        return;
+fn qname_wire_length(bytes: &[u8]) -> Option<usize> {
+    let mut idx = 0;
+    while idx < bytes.len() {
+        let len = *bytes.get(idx)? as usize;
+        idx += 1;
+        if len == 0 {
+            return Some(idx);
+        }
+        idx = idx.checked_add(len)?;
     }
+    None
+}
 
-    let _guard = test_mutex().lock().expect("failed to acquire test mutex");
-    // Fake payload that resembles a different domain question (e.g., example.com)
-    let payload = [
-        0x07, b'e', b'x', b'a', b'm', b'p', b'l', b'e', 0x03, b'c', b'o', b'm', 0x00, 0x00, 0x01,
-        0x00, 0x01,
-    ];
-    let harness = TestHarness::spawn().expect("server failed to start");
-    let response = harness
-        .send_probe(&payload)
-        .expect("failed to receive DNS response bytes");
-    assert_canonical_response(&response);
+fn encode_domain(domain: &str) -> Vec<u8> {
+    let mut encoded = Vec::new();
+    for label in domain.split('.') {
+        encoded.push(label.len() as u8);
+        encoded.extend_from_slice(label.as_bytes());
+    }
+    encoded.push(0x00);
+    encoded
+}
+
+struct AnswerRecord {
+    name: Vec<u8>,
+    rtype: u16,
+    rclass: u16,
+    ttl: u32,
+    rdata: Vec<u8>,
+}
+
+impl AnswerRecord {
+    fn name(&self) -> Option<String> {
+        normalize_qname(&self.name)
+    }
+}
+
+fn normalize_qname(raw: &[u8]) -> Option<String> {
+    let mut labels = Vec::new();
+    let mut idx = 0;
+    while idx < raw.len() {
+        let len = *raw.get(idx)? as usize;
+        idx += 1;
+        if len == 0 {
+            break;
+        }
+        let end = idx.checked_add(len)?;
+        let label_bytes = raw.get(idx..end)?;
+        let label = std::str::from_utf8(label_bytes).ok()?.to_ascii_lowercase();
+        labels.push(label);
+        idx = end;
+    }
+    if labels.is_empty() {
+        None
+    } else {
+        Some(labels.join("."))
+    }
 }

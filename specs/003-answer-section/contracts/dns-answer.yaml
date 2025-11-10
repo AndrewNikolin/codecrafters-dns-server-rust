@@ -1,0 +1,42 @@
+openapi: 3.1.0
+info:
+  title: DNS Answer Section Stub
+  version: "0.1.0"
+servers:
+  - url: udp://localhost:2053
+    description: Logical representation of the UDP endpoint used by Codecrafters harness
+paths:
+  /dns/query:
+    post:
+      summary: Submit a DNS query payload and receive the encoded answer section.
+      description: >-
+        Represents the behavior of the UDP server. The request/response bodies are binary
+        DNS packets encoded as base64 for documentation purposes.
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+              description: Raw DNS query. First question's QNAME must be codecrafters.io to trigger answer.
+      responses:
+        "200":
+          description: DNS response containing single answer record when applicable.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+                description: Raw DNS response. ANSWER count is 1 when QNAME == codecrafters.io, 0 otherwise.
+          headers:
+            X-Answer-Count:
+              schema:
+                type: integer
+              description: Mirrors ANCOUNT field for easier automated checks.
+        "204":
+          description: Returned logically when no answer section is emitted (maps to ANCOUNT=0 in UDP response).
+      x-behavior:
+        nameEncoding: "0x0c 'codecrafters' 0x02 'io' 0x00"
+        ttlSeconds: 60
+        ipv4: "8.8.8.8"
