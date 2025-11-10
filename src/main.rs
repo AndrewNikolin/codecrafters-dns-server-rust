@@ -86,6 +86,11 @@ fn handle_packet(resolver: &ForwardingResolver, packet: &[u8]) -> Result<Option<
         None => return Ok(None),
     };
 
+    if header.opcode() != 0 {
+        let assembler = ResponseAssembler::new(&header, &questions);
+        return Ok(Some(assembler.assemble(&[], 0, 4)));
+    }
+
     if header.qdcount == 1 {
         let assembler = ResponseAssembler::new(&header, &questions);
         let question = &questions[0];
