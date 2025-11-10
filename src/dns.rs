@@ -193,8 +193,9 @@ fn decode_name(packet: &[u8], offset: usize) -> Option<(Vec<u8>, usize)> {
             cursor = pointer;
             continue;
         } else if len == 0 {
+            cursor += 1;
             if consumed.is_none() {
-                consumed = Some(cursor + 1);
+                consumed = Some(cursor);
             }
             break;
         } else {
@@ -206,9 +207,6 @@ fn decode_name(packet: &[u8], offset: usize) -> Option<(Vec<u8>, usize)> {
             }
             labels.push(packet[start..end].to_vec());
             cursor = end;
-            if consumed.is_none() {
-                consumed = Some(cursor);
-            }
         }
     }
 
