@@ -1,5 +1,4 @@
 use bytes::{BufMut, BytesMut};
-use std::collections::HashSet;
 use std::convert::TryInto;
 
 pub const HEADER_LEN: usize = 12;
@@ -167,10 +166,9 @@ fn parse_questions(packet: &[u8], qdcount: u16) -> Option<Vec<DecodedQuestion>> 
 
 fn decode_name(packet: &[u8], offset: usize) -> Option<(Vec<u8>, usize)> {
     let mut cursor = offset;
-    let mut consumed_offset: Option<usize> = None;
+    let mut consumed: Option<usize> = None;
     let mut hops = 0;
-    let mut visited_pointers = HashSet::new();
-    let mut name = Vec::new();
+    let mut labels: Vec<Vec<u8>> = Vec::new();
 
     loop {
         if cursor >= packet.len() {
@@ -181,14 +179,11 @@ fn decode_name(packet: &[u8], offset: usize) -> Option<(Vec<u8>, usize)> {
             if cursor + 1 >= packet.len() {
                 return None;
             }
-            if consumed_offset.is_none() {
-                consumed_offset = Some(cursor + 2);
+            if consumed.is_none() {
+                consumed = Some(cursor + 2);
             }
             let pointer = ((((len & 0x3F) as u16) << 8) | packet[cursor + 1] as u16) as usize;
             if pointer >= packet.len() {
-                return None;
-            }
-            if !visited_pointers.insert(pointer) {
                 return None;
             }
             hops += 1;
@@ -198,8 +193,8 @@ fn decode_name(packet: &[u8], offset: usize) -> Option<(Vec<u8>, usize)> {
             cursor = pointer;
             continue;
         } else if len == 0 {
-            if consumed_offset.is_none() {
-                consumed_offset = Some(cursor + 1);
+            if consumed.is_none() {
+                consumed = Some(cursor + 1);
             }
             break;
         } else {
@@ -209,20 +204,25 @@ fn decode_name(packet: &[u8], offset: usize) -> Option<(Vec<u8>, usize)> {
             if label_len == 0 || label_len > 63 || end > packet.len() {
                 return None;
             }
-            if name.len() + label_len + 1 > 255 {
-                return None;
-            }
-            name.push(label_len as u8);
-            name.extend_from_slice(&packet[start..end]);
+            labels.push(packet[start..end].to_vec());
             cursor = end;
-            if consumed_offset.is_none() {
-                consumed_offset = Some(cursor);
+            if consumed.is_none() {
+                consumed = Some(cursor);
             }
         }
     }
 
+    let mut name = Vec::new();
+    for label in labels {
+        if name.len() + label.len() + 1 > 255 {
+            return None;
+        }
+        name.push(label.len() as u8);
+        name.extend_from_slice(&label);
+    }
     name.push(0);
-    Some((name, consumed_offset.unwrap_or(cursor)))
+
+    Some((name, consumed.unwrap_or(cursor)))
 }
 
 fn serialize_questions(questions: &[DecodedQuestion]) -> Vec<u8> {
